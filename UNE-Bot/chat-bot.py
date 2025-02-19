@@ -125,6 +125,7 @@ def main():
     application.add_handler(CommandHandler("facturacion", facturacion))
     application.add_handler(CommandHandler("sumar_uno", sumar_uno))
     application.add_handler(CommandHandler("ultimas_notas", ultimas_notas))
+    application.add_handler(CommandHandler("ultimas_notas", deficit))
 
     # Registrar manejador para mensajes no reconocidos
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
