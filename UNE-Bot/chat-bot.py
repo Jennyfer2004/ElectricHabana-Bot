@@ -1,138 +1,84 @@
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import json
+import requests
+import logging
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-# Token del bot
-TOKEN = "7340871190:AAHHCJgbak61ui7ypZSnEhd63DN_Q07q5qg"
+# Configuración de logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(name)
 
-# Función para /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("¡Bienvenido al chatbot de la Empresa Eléctrica de La H! Escribe /help para ver las opciones disponibles.")
+# API Key de Hugging Face (reemplaza con tu clave)
+HUGGINGFACE_API_KEY = "TU_API_KEY"
 
-# Función para /help
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""
-    Comandos disponibles:
-    /start - Iniciar el bot
-    /help - Mostrar esta ayuda
-    /horario_apagon - Consultar horarios de apagón programado
-    /reportar_falla - Reportar una falla eléctrica
-    /facturacion - Información sobre facturación y pagos
-    /sumar_uno [número] - Enviar un número y recibir ese número + 1
-    /ultimas_notas [número] - Obtener las últimas X notas informativas
-    /deficit [fecha] - Obtener el deficit de la fecha 
-    """)
+# Modelo a usar en Hugging Face
+HUGGINGFACE_MODEL = "mistralai/Mistral-7B"
 
-# Función para /horario_apagon
-async def horario_apagon(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Los horarios de apagón programado varían según la región. Consulta el sitio web oficial de la UNE.")
+# Cargar la base de datos solo con municipios de La Habana
+with open("datos_electricos.json", "r", encoding="utf-8") as f:
+    datos_db = json.load(f)
 
-# Función para /reportar_falla
-async def reportar_falla(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Para reportar una falla eléctrica, llama al número de emergencia 188 o visita el sitio web de la UNE.")
+# Lista de municipios de La Habana
+municipios_habana = [municipio.lower() for municipio in datos_db.keys()]
 
-# Función para /facturacion
-async def facturacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Puedes pagar tu factura en las oficinas de la UNE, bancos autorizados o mediante aplicaciones móviles.")
+# Verifica si la consulta es válida (relacionada con apagones en La Habana)
+def es_consulta_valida(consulta):
+    palabras_clave = ["apagón", "corte", "déficit", "electricidad", "afectación", "energía"]
+    return any(palabra in consulta.lower() for palabra in palabras_clave) or \
+           any(municipio in consulta.lower() for municipio in municipios_habana)
 
-# Función para /sumar_uno
-async def sumar_uno(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        numero = float(context.args[0])  # Obtener el número ingresado después del comando
-        resultado = numero + 1
-        await update.message.reply_text(f"El número que me enviaste es: {numero}. Si le sumo 1, el resultado es: {resultado}")
-    except (IndexError, ValueError):
-        await update.message.reply_text("Por favor, proporciona un número válido. Ejemplo: /sumar_uno 5")
+# Obtiene datos del municipio si está en la base de datos
+def obtener_datos_relevantes(consulta):
+    for municipio, info in datos_db.items():
+        if municipio.lower() in consulta.lower():
+            return f"Municipio: {municipio}\nDéficit actual: {info['déficit']}\nEstado de apagones: {info['apagones']}"
+    return None
 
-# Función para /ultimas_notas
-async def deficit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        x = int(context.args[0])  # Obtener el número de notas desde los argumentos del comando
-        if x <= 0:
-            raise ValueError()
-    except (IndexError, ValueError):
-        await update.message.reply_text("Por favor, proporciona un número válido de notas. Ejemplo: /ultimas_notas 5")
+# Consulta la API de Hugging Face para generar respuestas
+def consulta_huggingface(mensaje):
+    url = f"https://api-inference.huggingface.co/models/{HUGGINGFACE_MODEL}"
+    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+    data = {"inputs": mensaje}
+
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code == 200:
+        return response.json()[0]['generated_text']
+    else:
+        return "Error al obtener respuesta de la IA."
+
+# Comando /start
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("Bienvenido al asistente eléctrico de La Habana. Pregunta sobre apagones o déficit en cualquier municipio.")
+
+# Manejo de mensajes
+def handle_message(update: Update, context: CallbackContext):
+    user_text = update.message.text
+
+    if not es_consulta_valida(user_text):
+        update.message.reply_text("Solo tengo información sobre apagones y déficit eléctrico en los municipios de La Habana.")
         return
 
-    # Cargar el archivo JSON
-    try:
-        with open("/home/jennifer/Documentos/tercer_año/primer_semestre/PLN/ElectricHabana-Bot/datos/data_nota_informativa.json", "r", encoding="utf-8") as file:
-            datos = json.load(file)
-    except FileNotFoundError:
-        await update.message.reply_text("No se encontró el archivo de notas informativas.")
-        return
-    except json.JSONDecodeError:
-        await update.message.reply_text("El archivo de notas informativas no tiene un formato válido.")
+    datos_relevantes = obtener_datos_relevantes(user_text)
+    if datos_relevantes is None:
+        update.message.reply_text("No tengo información sobre ese municipio en La Habana.")
         return
 
-    # Tomar las últimas X notas
-    ultimas = list(datos.items())[:x]
-    
-    # Obtener chat_id
-    chat_id = update.message.chat_id
+    # Construcción del mensaje para la IA
+    prompt = f"Basándote solo en esta información, responde de forma clara y concisa:\n\n{datos_relevantes}"
+    respuesta = consulta_huggingface(prompt)
 
-    # Enviar cada nota como un mensaje separado
-    for fecha, nota in ultimas:
-        mensaje = f"- {fecha}: {nota[0]}" if nota else f"- {fecha}: (Sin información)"
-        await context.bot.send_message(chat_id=chat_id, text=mensaje)
-        
-# Función para /ultimas_notas
-async def ultimas_notas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        x = int(context.args[0])  # Obtener el número de notas desde los argumentos del comando
-        if x <= 0:
-            raise ValueError()
-    except (IndexError, ValueError):
-        await update.message.reply_text("Por favor, proporciona un número válido de notas. Ejemplo: /ultimas_notas 5")
-        return
-
-    # Cargar el archivo JSON
-    try:
-        with open("/home/jennifer/Documentos/tercer_año/primer_semestre/PLN/ElectricHabana-Bot/datos/data_nota_informativa.json", "r", encoding="utf-8") as file:
-            datos = json.load(file)
-    except FileNotFoundError:
-        await update.message.reply_text("No se encontró el archivo de notas informativas.")
-        return
-    except json.JSONDecodeError:
-        await update.message.reply_text("El archivo de notas informativas no tiene un formato válido.")
-        return
-
-    # Tomar las últimas X notas
-    ultimas = list(datos.items())[:x]
-    
-    # Obtener chat_id
-    chat_id = update.message.chat_id
-
-    # Enviar cada nota como un mensaje separado
-    for fecha, nota in ultimas:
-        mensaje = f"- {fecha}: {nota[0]}" if nota else f"- {fecha}: (Sin información)"
-        await context.bot.send_message(chat_id=chat_id, text=mensaje)
-
-# Función para mensajes desconocidos
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Lo siento, no entiendo ese comando. Escribe /help para ver las opciones disponibles.")
+    update.message.reply_text(respuesta)
 
 # Función principal para iniciar el bot
 def main():
-    # Crear la aplicación y pasarle el token
-    application = Application.builder().token(TOKEN).build()
+    updater = Updater("TU_TOKEN_DE_TELEGRAM", use_context=True)
+    dp = updater.dispatcher
 
-    # Registrar manejadores de comandos
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("horario_apagon", horario_apagon))
-    application.add_handler(CommandHandler("reportar_falla", reportar_falla))
-    application.add_handler(CommandHandler("facturacion", facturacion))
-    application.add_handler(CommandHandler("sumar_uno", sumar_uno))
-    application.add_handler(CommandHandler("ultimas_notas", ultimas_notas))
-    application.add_handler(CommandHandler("ultimas_notas", deficit))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
-    # Registrar manejador para mensajes no reconocidos
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    updater.start_polling()
+    updater.idle()
 
-    # Iniciar el bot
-    print("Bot iniciado. Presiona Ctrl+C para detenerlo.")
-    application.run_polling(timeout=10)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
